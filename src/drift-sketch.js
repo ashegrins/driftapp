@@ -1,15 +1,30 @@
-// drift-sketch.js — v2
-// 7-emotion hue system with gesture analytics for session summary
+// drift-sketch.js — v3
+// Analytics driven primarily by hue history (ground truth of gesture speed)
+// Gesture counts used only as lightweight tiebreakers
 
 export const EMOTIONS = [
-  { name: 'Anger',     hue: 0,   color: '#ff3b30', gesture: 'Rapid, forceful tapping',       desc: 'High arousal, heat, intense focus' },
-  { name: 'Alertness', hue: 30,  color: '#ff9500', gesture: 'Precise, hovering movements',    desc: 'Energetic, looking forward' },
-  { name: 'Ecstasy',   hue: 55,  color: '#ffd60a', gesture: 'Frequent micro-interactions',    desc: 'Brightness, positivity, enlightenment' },
-  { name: 'Trust',     hue: 120, color: '#34c759', gesture: 'Fluent, fluid navigation',        desc: 'Feeling safe, confident in growth' },
-  { name: 'Peace',     hue: 210, color: '#30b0c7', gesture: 'Slow, idle tapping',             desc: 'Calmness, tranquility, openness' },
-  { name: 'Sadness',   hue: 240, color: '#5e5ce6', gesture: 'Repeated back-and-forth',        desc: 'Reflection, heaviness, withdrawal' },
-  { name: 'Amazement', hue: 280, color: '#bf5af2', gesture: 'Sudden stops & quick tapping',   desc: 'Mystery, the unknown, quick shifts' },
+  { name: 'Anger',     hue: 0,   color: '#ff3b30', gesture: 'Rapid, forceful tapping',      desc: 'High arousal, heat, intense focus' },
+  { name: 'Alertness', hue: 30,  color: '#ff9500', gesture: 'Precise, hovering movements',   desc: 'Energetic, looking forward' },
+  { name: 'Ecstasy',   hue: 55,  color: '#ffd60a', gesture: 'Frequent micro-interactions',   desc: 'Brightness, positivity, enlightenment' },
+  { name: 'Trust',     hue: 120, color: '#34c759', gesture: 'Fluent, fluid navigation',       desc: 'Feeling safe, confident in growth' },
+  { name: 'Peace',     hue: 210, color: '#30b0c7', gesture: 'Slow, idle tapping',            desc: 'Calmness, tranquility, openness' },
+  { name: 'Sadness',   hue: 240, color: '#5e5ce6', gesture: 'Repeated back-and-forth',       desc: 'Reflection, heaviness, withdrawal' },
+  { name: 'Amazement', hue: 280, color: '#bf5af2', gesture: 'Sudden stops & quick tapping',  desc: 'Mystery, the unknown, quick shifts' },
 ]
+
+// Fresh analytics object — call this to reset between sessions
+export function freshAnalytics() {
+  return {
+    hueHistory: [],       // { hue } sampled every ~500ms while session is active
+    tapCount: 0,
+    rapidTapCount: 0,     // taps < 400ms apart
+    backForthCount: 0,    // direction reversals
+    stopCount: 0,         // sudden speed drops from fast → still
+    microCount: 0,        // touches held < 180ms
+    idleFrames: 0,        // frames with no touch and low speed
+    fluidFrames: 0,       // frames with smooth medium-speed movement
+  }
+}
 
 export default function createDriftSketch(gestureRef) {
   return function sketch(p) {
@@ -18,22 +33,14 @@ export default function createDriftSketch(gestureRef) {
     let touchPoints = []
     let gestureSpeed = 0
     let smoothHue = 210
-    let targetHue = 210
     let globalTime = 0
 
-    // Analytics
-    let hueHistory = []
-    let tapCount = 0
+    // Local gesture state (not exposed to React, just for tracking)
     let lastTapTime = 0
-    let rapidTapCount = 0
-    let backForthCount = 0
     let lastMoveDir = null
-    let stopCount = 0
     let lastSpeedHigh = false
-    let microInteractionCount = 0
     let touchStartTime = 0
-    let hoverTime = 0
-    let fluidScore = 0
+    let sampleTick = 0
 
     class Particle {
       constructor() { this.reset(true) }
@@ -57,7 +64,10 @@ export default function createDriftSketch(gestureRef) {
       }
 
       update(hue) {
-        const angle = p.noise(this.noiseOffsetX + globalTime * 0.0008, this.noiseOffsetY + globalTime * 0.0008) * p.TWO_PI * 2
+        const angle = p.noise(
+          this.noiseOffsetX + globalTime * 0.0008,
+          this.noiseOffsetY + globalTime * 0.0008
+        ) * p.TWO_PI * 2
         this.vx += Math.cos(angle) * 0.018
         this.vy += Math.sin(angle) * 0.018
 
@@ -132,21 +142,41 @@ export default function createDriftSketch(gestureRef) {
       globalTime++
       p.background(220, 60, 2, 0.18)
 
-      targetHue = gestureRef.current?.targetHue ?? 210
+      const targetHue = gestureRef.current?.targetHue ?? 210
       smoothHue = lerp(smoothHue, targetHue, 0.04)
       gestureSpeed *= 0.92
 
-      if (gestureSpeed < 3 && touchPoints.length > 0) hoverTime++
-      if (gestureSpeed > 5 && gestureSpeed < 15) fluidScore += 0.05
+      const sessionActive = gestureRef.current?.sessionActive ?? false
+      const analytics = gestureRef.current?.analytics
 
-      // Sample hue every ~500ms
-      if (globalTime % 30 === 0 && gestureRef.current?.sessionActive) {
-        hueHistory.push({ hue: smoothHue, time: globalTime })
+      if (sessionActive && analytics) {
+        // Sample hue every 30 frames (~500ms at 60fps)
+        sampleTick++
+        if (sampleTick >= 30) {
+          sampleTick = 0
+          analytics.hueHistory.push({ hue: smoothHue })
+        }
+
+        // Idle frames: no touch and speed near zero
+        if (touchPoints.length === 0 && gestureSpeed < 2) {
+          analytics.idleFrames++
+        }
+
+        // Fluid frames: medium smooth speed
+        if (gestureSpeed > 4 && gestureSpeed < 18) {
+          analytics.fluidFrames++
+        }
+
+        // Stop detection: was fast, now slow
+        const isSpeedHigh = gestureSpeed > 22
+        if (lastSpeedHigh && !isSpeedHigh && gestureSpeed < 4) {
+          analytics.stopCount++
+        }
+        lastSpeedHigh = isSpeedHigh
+      } else {
+        sampleTick = 0
+        lastSpeedHigh = false
       }
-
-      const isSpeedHigh = gestureSpeed > 20
-      if (lastSpeedHigh && !isSpeedHigh && gestureSpeed < 5) stopCount++
-      lastSpeedHigh = isSpeedHigh
 
       touchPoints = touchPoints.filter(pt => {
         pt.strength *= 0.97
@@ -154,24 +184,9 @@ export default function createDriftSketch(gestureRef) {
         return pt.strength > 0.01
       })
 
-      if (gestureRef) {
-        gestureRef.current = {
-          ...gestureRef.current,
-          hue: smoothHue,
-          speed: gestureSpeed,
-          touchCount: touchPoints.length,
-          analytics: {
-            hueHistory,
-            tapCount,
-            rapidTapCount,
-            backForthCount,
-            stopCount,
-            microInteractionCount,
-            hoverTime,
-            fluidScore,
-          }
-        }
-      }
+      // Write back minimal state (don't overwrite analytics object reference)
+      gestureRef.current.hue = smoothHue
+      gestureRef.current.speed = gestureSpeed
 
       for (const particle of particles) {
         particle.update(smoothHue)
@@ -187,6 +202,8 @@ export default function createDriftSketch(gestureRef) {
       }
     }
 
+    // ── Interaction handlers ────────────────────────────────────────────────
+
     function handleMove(x, y) {
       const existing = touchPoints.find(pt => pt.id === 'primary')
       if (existing) {
@@ -195,42 +212,57 @@ export default function createDriftSketch(gestureRef) {
         const spd = Math.sqrt(dx * dx + dy * dy)
         gestureSpeed = Math.min(spd, 60)
 
-        const dir = Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 'R' : 'L') : (dy > 0 ? 'D' : 'U')
-        const opposites = { R: 'L', L: 'R', D: 'U', U: 'D' }
-        if (lastMoveDir && dir === opposites[lastMoveDir]) backForthCount++
+        // Back-and-forth detection
+        const dir = Math.abs(dx) > Math.abs(dy)
+          ? (dx > 0 ? 'R' : 'L')
+          : (dy > 0 ? 'D' : 'U')
+        const opp = { R: 'L', L: 'R', D: 'U', U: 'D' }
+        const analytics = gestureRef.current?.analytics
+        if (analytics && lastMoveDir && dir === opp[lastMoveDir]) {
+          analytics.backForthCount++
+        }
         lastMoveDir = dir
 
-        if (spd > 3 && spd < 20) fluidScore += 0.05
-
-        existing.x = x; existing.y = y
+        existing.x = x
+        existing.y = y
         existing.strength = Math.min(existing.strength + 0.1, 1.0)
       } else {
         touchPoints.push({ id: 'primary', x, y, strength: 1, radius: 160 })
       }
-      if (gestureRef.current) gestureRef.current.targetHue = mapSpeedToHue(gestureSpeed)
+      if (gestureRef.current) {
+        gestureRef.current.targetHue = mapSpeedToHue(gestureSpeed)
+      }
     }
 
     function handlePress(x, y) {
       touchStartTime = Date.now()
-      tapCount++
-      const now = Date.now()
-      if (now - lastTapTime < 500) rapidTapCount++
-      lastTapTime = now
+      const analytics = gestureRef.current?.analytics
+      if (analytics) {
+        analytics.tapCount++
+        const now = Date.now()
+        if (now - lastTapTime < 400) analytics.rapidTapCount++
+        lastTapTime = now
+      }
       touchPoints.push({ id: 'primary', x, y, strength: 0.6, radius: 160 })
-      if (gestureRef.current) gestureRef.current.targetHue = mapSpeedToHue(0)
+      if (gestureRef.current) {
+        gestureRef.current.targetHue = mapSpeedToHue(0)
+      }
     }
 
     function handleRelease() {
       const duration = Date.now() - touchStartTime
-      if (duration < 200) microInteractionCount++
+      const analytics = gestureRef.current?.analytics
+      if (analytics && duration < 180) {
+        analytics.microCount++
+      }
     }
 
-    p.mousePressed = () => handlePress(p.mouseX, p.mouseY)
-    p.mouseDragged = () => { if (p.mouseButton === p.LEFT) handleMove(p.mouseX, p.mouseY) }
+    p.mousePressed  = () => handlePress(p.mouseX, p.mouseY)
+    p.mouseDragged  = () => { if (p.mouseButton === p.LEFT) handleMove(p.mouseX, p.mouseY) }
     p.mouseReleased = () => handleRelease()
-    p.mouseMoved = () => {
-      const existing = touchPoints.find(pt => pt.id === 'hover')
-      if (existing) { existing.x = p.mouseX; existing.y = p.mouseY; existing.strength = 0.15 }
+    p.mouseMoved    = () => {
+      const ex = touchPoints.find(pt => pt.id === 'hover')
+      if (ex) { ex.x = p.mouseX; ex.y = p.mouseY; ex.strength = 0.15 }
       else touchPoints.push({ id: 'hover', x: p.mouseX, y: p.mouseY, strength: 0.15, radius: 100 })
     }
 
@@ -245,16 +277,22 @@ export default function createDriftSketch(gestureRef) {
     }
     p.touchMoved = () => {
       for (const t of p.touches) {
-        const existing = touchPoints.find(pt => pt.id === `t${t.id}`)
-        if (existing) {
-          const dx = t.x - existing.x; const dy = t.y - existing.y
+        const ex = touchPoints.find(pt => pt.id === `t${t.id}`)
+        if (ex) {
+          const dx = t.x - ex.x
+          const dy = t.y - ex.y
           gestureSpeed = Math.min(Math.sqrt(dx * dx + dy * dy), 60)
-          existing.x = t.x; existing.y = t.y
-          existing.strength = Math.min(existing.strength + 0.05, 1.0)
-          if (gestureRef.current) gestureRef.current.targetHue = mapSpeedToHue(gestureSpeed)
+          ex.x = t.x; ex.y = t.y
+          ex.strength = Math.min(ex.strength + 0.05, 1.0)
+          if (gestureRef.current) {
+            gestureRef.current.targetHue = mapSpeedToHue(gestureSpeed)
+          }
           const dir = Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 'R' : 'L') : (dy > 0 ? 'D' : 'U')
-          const opposites = { R: 'L', L: 'R', D: 'U', U: 'D' }
-          if (lastMoveDir && dir === opposites[lastMoveDir]) backForthCount++
+          const opp = { R: 'L', L: 'R', D: 'U', U: 'D' }
+          const analytics = gestureRef.current?.analytics
+          if (analytics && lastMoveDir && dir === opp[lastMoveDir]) {
+            analytics.backForthCount++
+          }
           lastMoveDir = dir
         } else {
           touchPoints.push({ id: `t${t.id}`, x: t.x, y: t.y, strength: 0.8, radius: 160 })
@@ -262,74 +300,84 @@ export default function createDriftSketch(gestureRef) {
       }
       return false
     }
-    p.touchEnded = () => { handleRelease(); return false }
+    p.touchEnded   = () => { handleRelease(); return false }
     p.windowResized = () => p.resizeCanvas(window.innerWidth, window.innerHeight)
 
+    // ── Hue → emotion mapping ───────────────────────────────────────────────
+    // Idle/slow  → Peace (210) / Sadness (240)
+    // Medium     → Amazement (280) / Trust (120)
+    // Fast       → Ecstasy (55) / Alertness (30) / Anger (0)
     function mapSpeedToHue(speed) {
       const t = Math.min(speed / 50, 1)
-      if (t < 0.2)  return lerp(210, 240, t / 0.2)          // Peace → Sadness
-      if (t < 0.4)  return lerp(240, 280, (t - 0.2) / 0.2)  // Sadness → Amazement
-      if (t < 0.6)  return lerp(280, 120, (t - 0.4) / 0.2)  // Amazement → Trust
-      if (t < 0.75) return lerp(120, 55,  (t - 0.6) / 0.15) // Trust → Ecstasy
-      if (t < 0.9)  return lerp(55,  30,  (t - 0.75) / 0.15)// Ecstasy → Alertness
-      return lerp(30, 0, (t - 0.9) / 0.1)                   // Alertness → Anger
+      if (t < 0.18) return lerp(210, 240, t / 0.18)
+      if (t < 0.36) return lerp(240, 280, (t - 0.18) / 0.18)
+      if (t < 0.55) return lerp(280, 120, (t - 0.36) / 0.19)
+      if (t < 0.70) return lerp(120, 55,  (t - 0.55) / 0.15)
+      if (t < 0.85) return lerp(55,  30,  (t - 0.70) / 0.15)
+      return           lerp(30,  0,   (t - 0.85) / 0.15)
     }
 
     function lerp(a, b, t) { return a + (b - a) * t }
   }
 }
 
+// ── Session analysis ──────────────────────────────────────────────────────────
+// Primary result = emotion whose hue bucket dominated the session.
+// Gesture counts used only to break ties, with conservative weights.
 export function analyzeSession(analytics) {
+  if (!analytics) return null
   const { hueHistory, tapCount, rapidTapCount, backForthCount,
-          stopCount, microInteractionCount, hoverTime, fluidScore } = analytics
+          stopCount, microCount, idleFrames, fluidFrames } = analytics
 
-  if (!hueHistory || hueHistory.length === 0) return null
+  // Need at least a few samples to be meaningful
+  if (!hueHistory || hueHistory.length < 2) return null
 
-  const hueCounts = {}
+  // 1. Count how many samples landed in each emotion's hue bucket
+  const buckets = {}
+  for (const e of EMOTIONS) buckets[e.name] = 0
+
   for (const { hue } of hueHistory) {
-    const emotion = closestEmotion(hue)
-    hueCounts[emotion.name] = (hueCounts[emotion.name] || 0) + 1
+    const e = closestEmotion(hue)
+    buckets[e.name]++
   }
 
+  const total = hueHistory.length
+
+  // 2. Convert bucket counts to base scores (0–100 scale)
   const scores = {}
-  for (const e of EMOTIONS) scores[e.name] = (hueCounts[e.name] || 0) * 10
+  for (const e of EMOTIONS) {
+    scores[e.name] = (buckets[e.name] / total) * 100
+  }
 
-  scores['Anger']     += rapidTapCount * 8
-  scores['Alertness'] += (hoverTime > 20 ? 15 : 0)
-  scores['Ecstasy']   += microInteractionCount * 6
-  scores['Trust']     += fluidScore * 0.8
-  scores['Peace']     += hoverTime * 0.3
-  scores['Sadness']   += backForthCount * 7
-  scores['Amazement'] += stopCount * 9
+  // 3. Gesture tiebreakers — small flat bonuses, capped so they can't
+  //    flip the result unless two emotions are genuinely close in hue time
+  const BONUS = 6  // max bonus any single gesture signal can add
 
+  scores['Anger']     += Math.min(rapidTapCount * 1.5, BONUS)
+  scores['Ecstasy']   += Math.min(microCount * 1.2, BONUS)
+  scores['Sadness']   += Math.min(backForthCount * 1.0, BONUS)
+  scores['Amazement'] += Math.min(stopCount * 1.5, BONUS)
+  scores['Trust']     += Math.min((fluidFrames / 60) * 1.0, BONUS)
+  scores['Peace']     += Math.min((idleFrames / 60) * 1.0, BONUS)
+  scores['Alertness'] += Math.min(tapCount > 5 && rapidTapCount < 2 ? 3 : 0, BONUS)
+
+  // 4. Sort and pick top two
   const sorted = EMOTIONS
-    .map(e => ({ ...e, score: scores[e.name] || 0 }))
+    .map(e => ({ ...e, score: scores[e.name] }))
     .sort((a, b) => b.score - a.score)
 
-  const primary = sorted[0]
-  const secondary = sorted[1]
-  const hueSpread = hueHistory.length > 1
-    ? Math.max(...hueHistory.map(h => h.hue)) - Math.min(...hueHistory.map(h => h.hue))
-    : 0
-  const wasExpressive = hueSpread > 80
+  const primary   = sorted[0]
+  const secondary = sorted[1].score > 5 ? sorted[1] : null
 
-  return {
-    primary,
-    secondary,
-    wasExpressive,
-    tapCount,
-    rapidTapCount,
-    backForthCount,
-    stopCount,
-    microInteractionCount,
-    dominantHue: hueHistory[Math.floor(hueHistory.length / 2)]?.hue ?? 210,
-    allScores: sorted,
-  }
+  const hueSpread = Math.max(...hueHistory.map(h => h.hue))
+                  - Math.min(...hueHistory.map(h => h.hue))
+  const wasExpressive = hueSpread > 70
+
+  return { primary, secondary, wasExpressive, tapCount, allScores: sorted }
 }
 
 function closestEmotion(hue) {
-  let best = EMOTIONS[0]
-  let bestDist = 999
+  let best = EMOTIONS[0], bestDist = 999
   for (const e of EMOTIONS) {
     let dist = Math.abs(e.hue - hue)
     if (dist > 180) dist = 360 - dist

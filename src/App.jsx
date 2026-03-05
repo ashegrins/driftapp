@@ -1,18 +1,8 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
 import p5 from 'p5'
-import createDriftSketch, { EMOTIONS, analyzeSession } from './drift-sketch.js'
+import createDriftSketch, { EMOTIONS, analyzeSession, freshAnalytics } from './drift-sketch.js'
 
 const SESSION_DURATION = 30
-
-function closestEmotion(hue) {
-  let best = EMOTIONS[0], bestDist = 999
-  for (const e of EMOTIONS) {
-    let dist = Math.abs(e.hue - hue)
-    if (dist > 180) dist = 360 - dist
-    if (dist < bestDist) { bestDist = dist; best = e }
-  }
-  return best
-}
 
 // ─── Instructions — compact, no scroll needed ─────────────────────────────────
 function InstructionsModal({ onClose }) {
@@ -243,33 +233,6 @@ function HelpButton({ onClick }) {
 }
 
 // ─── Live emotion label ────────────────────────────────────────────────────────
-function LiveEmotionLabel({ hue, speed }) {
-  const emotion = closestEmotion(hue)
-  const opacity = Math.min(0.35 + speed / 55, 0.95)
-  return (
-    <div style={{
-      position: 'fixed',
-      top: '50%', left: '50%',
-      transform: 'translate(-50%, -50%)',
-      textAlign: 'center',
-      pointerEvents: 'none',
-      zIndex: 10,
-      opacity,
-      transition: 'opacity 0.6s ease',
-    }}>
-      <div style={{
-        fontFamily: "'Cormorant Garamond', serif",
-        fontSize: 'clamp(2.8rem, 13vw, 5.5rem)',
-        fontWeight: 300,
-        letterSpacing: '0.08em',
-        color: emotion.color,
-        textShadow: `0 0 50px ${emotion.color}55, 0 0 100px ${emotion.color}22`,
-        transition: 'color 0.9s ease, text-shadow 0.9s ease',
-        lineHeight: 1,
-      }}>{emotion.name}</div>
-    </div>
-  )
-}
 
 // ─── Session-ending flash ──────────────────────────────────────────────────────
 function EndFlash() {
@@ -506,9 +469,12 @@ export default function App() {
   }, [])
 
   const startSession = useCallback(() => {
+    // Reset analytics cleanly before starting
+    gestureRef.current.analytics = freshAnalytics()
+    gestureRef.current.sessionActive = true
+    gestureRef.current.targetHue = 210
     setSessionState('active')
     setTimeLeft(SESSION_DURATION)
-    gestureRef.current.sessionActive = true
     let t = SESSION_DURATION
     sessionTimerRef.current = setInterval(() => {
       t--
@@ -516,7 +482,7 @@ export default function App() {
       if (t <= 0) {
         clearInterval(sessionTimerRef.current)
         gestureRef.current.sessionActive = false
-        setSessionState('ending') // show flash first
+        setSessionState('ending')
         setTimeout(() => {
           const result = analyzeSession(gestureRef.current.analytics)
           setSummaryResult(result || {
@@ -535,7 +501,7 @@ export default function App() {
     setTimeLeft(SESSION_DURATION)
     setSummaryResult(null)
     gestureRef.current.sessionActive = false
-    gestureRef.current.analytics = null
+    gestureRef.current.analytics = freshAnalytics()
   }, [])
 
   const handleInstructionsClose = useCallback(() => {
@@ -555,10 +521,6 @@ export default function App() {
         pointerEvents: 'none',
       }} />
 
-      {/* Live emotion label — only during active session */}
-      {sessionState === 'active' && (
-        <LiveEmotionLabel hue={displayState.hue} speed={displayState.speed} />
-      )}
 
       {/* Title */}
       <TitleOverlay visible={titleVisible && !showInstructions && sessionState === 'idle'} />
