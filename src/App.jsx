@@ -26,14 +26,16 @@ function InstructionsModal({ onClose }) {
       display: 'flex', alignItems: 'center', justifyContent: 'center',
       padding: '1.5rem',
       animation: 'fadeIn 0.4s ease',
+      touchAction: 'pan-y',
     }}>
       <style>{`
         @keyframes fadeIn { from { opacity:0; transform:scale(0.96) } to { opacity:1; transform:scale(1) } }
         @keyframes fadeOut { from { opacity:1 } to { opacity:0 } }
         .emotion-row:hover { background: rgba(255,255,255,0.04) !important; }
-        ::-webkit-scrollbar { width: 3px; }
-        ::-webkit-scrollbar-track { background: transparent; }
-        ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.15); border-radius: 2px; }
+        .modal-scroll { overflow-y: auto; -webkit-overflow-scrolling: touch; }
+        .modal-scroll::-webkit-scrollbar { width: 3px; }
+        .modal-scroll::-webkit-scrollbar-track { background: transparent; }
+        .modal-scroll::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.15); border-radius: 2px; }
       `}</style>
 
       <div style={{
@@ -71,7 +73,7 @@ function InstructionsModal({ onClose }) {
         </div>
 
         {/* Scrollable content */}
-        <div style={{ overflowY: 'auto', padding: '1.2rem 1.5rem', flexGrow: 1 }}>
+        <div className="modal-scroll" style={{ overflowY: 'auto', padding: '1.2rem 1.5rem', flexGrow: 1, touchAction: 'pan-y' }}>
 
           {/* How it works */}
           <div style={{ marginBottom: '1.4rem' }}>
@@ -391,7 +393,7 @@ function HelpButton({ onClick }) {
       fontStyle: 'italic',
       fontSize: '1rem',
       cursor: 'pointer',
-      zIndex: 50,
+      zIndex: 60,
       display: 'flex', alignItems: 'center', justifyContent: 'center',
       backdropFilter: 'blur(8px)',
       transition: 'all 0.2s',
@@ -442,7 +444,7 @@ function SessionBar({ sessionState, timeLeft, onStart }) {
     return (
       <div style={{
         position: 'fixed', bottom: '1.8rem', left: '50%', transform: 'translateX(-50%)',
-        zIndex: 50,
+        zIndex: 60,
       }}>
         <button onClick={onStart} style={{
           padding: '0.7rem 2rem',
@@ -600,8 +602,16 @@ export default function App() {
         @keyframes fadeIn { from { opacity:0; transform:scale(0.97) } to { opacity:1; transform:scale(1) } }
       `}</style>
 
-      {/* p5 canvas */}
-      <div ref={canvasRef} style={{ position: 'absolute', inset: 0, zIndex: 0 }} />
+      {/* p5 canvas — pointerEvents none so UI buttons above receive clicks */}
+      <div ref={canvasRef} style={{ position: 'absolute', inset: 0, zIndex: 0, pointerEvents: 'none' }} />
+
+      {/* Interaction capture layer — passes gestures to p5, sits below UI buttons */}
+      {!showInstructions && (
+        <div style={{
+          position: 'fixed', inset: 0, zIndex: 2,
+          touchAction: 'none',
+        }} />
+      )}
 
       {/* Vignette */}
       <div style={{

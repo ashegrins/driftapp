@@ -122,6 +122,7 @@ export default function createDriftSketch(gestureRef) {
     p.setup = () => {
       const canvas = p.createCanvas(window.innerWidth, window.innerHeight)
       canvas.style('display', 'block')
+      canvas.style('pointer-events', 'auto')
       p.colorMode(p.HSB, 360, 100, 100, 1)
       p.noStroke()
       for (let i = 0; i < PARTICLE_COUNT; i++) particles.push(new Particle())
