@@ -1,6 +1,9 @@
-// drift-sketch.js — v3
-// Analytics driven primarily by hue history (ground truth of gesture speed)
-// Gesture counts used only as lightweight tiebreakers
+// drift-sketch.js — v4
+// Fixes:
+// 1. handlePress no longer resets hue to 210 — tapping is neutral
+// 2. sampleTick resets properly at session start
+// 3. Background fade is hue-neutral (achromatic) so warm colours aren't swamped
+// 4. Speed thresholds lowered so full colour range is reachable on mobile
 
 export const EMOTIONS = [
   { name: 'Anger',     hue: 0,   color: '#ff3b30', gesture: 'Rapid, forceful tapping',      desc: 'High arousal, heat, intense focus' },
@@ -12,17 +15,16 @@ export const EMOTIONS = [
   { name: 'Amazement', hue: 280, color: '#bf5af2', gesture: 'Sudden stops & quick tapping',  desc: 'Mystery, the unknown, quick shifts' },
 ]
 
-// Fresh analytics object — call this to reset between sessions
 export function freshAnalytics() {
   return {
-    hueHistory: [],       // { hue } sampled every ~500ms while session is active
+    hueHistory: [],     // { hue } sampled every ~500ms while session active
     tapCount: 0,
-    rapidTapCount: 0,     // taps < 400ms apart
-    backForthCount: 0,    // direction reversals
-    stopCount: 0,         // sudden speed drops from fast → still
-    microCount: 0,        // touches held < 180ms
-    idleFrames: 0,        // frames with no touch and low speed
-    fluidFrames: 0,       // frames with smooth medium-speed movement
+    rapidTapCount: 0,   // taps < 400ms apart
+    backForthCount: 0,  // direction reversals
+    stopCount: 0,       // sudden drop from fast → still
+    microCount: 0,      // touch held < 180ms
+    idleFrames: 0,      // frames with no active touch
+    fluidFrames: 0,     // frames at smooth medium speed
   }
 }
 
@@ -35,12 +37,12 @@ export default function createDriftSketch(gestureRef) {
     let smoothHue = 210
     let globalTime = 0
 
-    // Local gesture state (not exposed to React, just for tracking)
     let lastTapTime = 0
     let lastMoveDir = null
     let lastSpeedHigh = false
     let touchStartTime = 0
     let sampleTick = 0
+    let wasSessionActive = false  // track transitions
 
     class Particle {
       constructor() { this.reset(true) }
@@ -95,7 +97,6 @@ export default function createDriftSketch(gestureRef) {
         this.y += this.vy
         this.life += this.lifeSpeed
         if (this.life > 1 || this.life < 0) this.lifeSpeed *= -1
-
         if (this.x < -30) this.x = p.width + 20
         if (this.x > p.width + 30) this.x = -20
         if (this.y < -30) this.y = p.height + 20
@@ -107,24 +108,24 @@ export default function createDriftSketch(gestureRef) {
       draw() {
         const alpha = this.opacity * (0.5 + this.life * 0.5)
         const h = this.currentHue
-        const s = 78
+        const s = 80
         const b = this.brightness
 
         for (let i = 0; i < this.trail.length; i++) {
           const t = i / this.trail.length
           p.noStroke()
-          p.fill(h, s, b, alpha * t * 0.35)
+          p.fill(h, s, b, alpha * t * 0.3)
           p.circle(this.trail[i].x, this.trail[i].y, this.size * t * 0.7)
         }
 
         p.noStroke()
-        p.fill(h, s - 20, b, alpha * 0.08)
+        p.fill(h, s - 20, b, alpha * 0.07)
         p.circle(this.x, this.y, this.size * 5.5)
-        p.fill(h, s, b, alpha * 0.2)
+        p.fill(h, s, b, alpha * 0.18)
         p.circle(this.x, this.y, this.size * 3)
         p.fill(h, s - 10, 100, alpha * 0.9)
         p.circle(this.x, this.y, this.size)
-        p.fill(h + 20, 30, 100, alpha * 0.6)
+        p.fill(h + 15, 20, 100, alpha * 0.5)
         p.circle(this.x, this.y, this.size * 0.4)
       }
     }
@@ -140,40 +141,47 @@ export default function createDriftSketch(gestureRef) {
 
     p.draw = () => {
       globalTime++
-      p.background(220, 60, 2, 0.18)
 
-      const targetHue = gestureRef.current?.targetHue ?? 210
-      smoothHue = lerp(smoothHue, targetHue, 0.04)
-      gestureSpeed *= 0.92
+      // ── Achromatic fade — no blue tint, warm colours survive ──────────────
+      // Draw a near-black rectangle each frame instead of p.background()
+      // This lets all hues fade equally without a blue cast
+      p.noStroke()
+      p.fill(0, 0, 3, 0.2)
+      p.rect(0, 0, p.width, p.height)
+
+      const targetHue = gestureRef.current?.targetHue ?? smoothHue
+      smoothHue = lerp(smoothHue, targetHue, 0.05)
+      gestureSpeed *= 0.91
 
       const sessionActive = gestureRef.current?.sessionActive ?? false
       const analytics = gestureRef.current?.analytics
 
+      // Detect session start transition — reset sampleTick cleanly
+      if (sessionActive && !wasSessionActive) {
+        sampleTick = 0
+      }
+      wasSessionActive = sessionActive
+
       if (sessionActive && analytics) {
-        // Sample hue every 30 frames (~500ms at 60fps)
         sampleTick++
         if (sampleTick >= 30) {
           sampleTick = 0
           analytics.hueHistory.push({ hue: smoothHue })
         }
 
-        // Idle frames: no touch and speed near zero
-        if (touchPoints.length === 0 && gestureSpeed < 2) {
+        if (touchPoints.filter(pt => pt.id !== 'hover').length === 0 && gestureSpeed < 2) {
           analytics.idleFrames++
         }
-
-        // Fluid frames: medium smooth speed
-        if (gestureSpeed > 4 && gestureSpeed < 18) {
+        if (gestureSpeed > 3 && gestureSpeed < 16) {
           analytics.fluidFrames++
         }
 
-        // Stop detection: was fast, now slow
-        const isSpeedHigh = gestureSpeed > 22
-        if (lastSpeedHigh && !isSpeedHigh && gestureSpeed < 4) {
+        const isSpeedHigh = gestureSpeed > 18
+        if (lastSpeedHigh && !isSpeedHigh && gestureSpeed < 3) {
           analytics.stopCount++
         }
         lastSpeedHigh = isSpeedHigh
-      } else {
+      } else if (!sessionActive) {
         sampleTick = 0
         lastSpeedHigh = false
       }
@@ -184,7 +192,6 @@ export default function createDriftSketch(gestureRef) {
         return pt.strength > 0.01
       })
 
-      // Write back minimal state (don't overwrite analytics object reference)
       gestureRef.current.hue = smoothHue
       gestureRef.current.speed = gestureSpeed
 
@@ -196,13 +203,13 @@ export default function createDriftSketch(gestureRef) {
       for (const pt of touchPoints) {
         if (pt.strength > 0.2) {
           p.noStroke()
-          p.fill(smoothHue, 60, 80, pt.strength * 0.03)
+          p.fill(smoothHue, 65, 85, pt.strength * 0.04)
           p.circle(pt.x, pt.y, pt.radius * 2.5)
         }
       }
     }
 
-    // ── Interaction handlers ────────────────────────────────────────────────
+    // ── Interaction ──────────────────────────────────────────────────────────
 
     function handleMove(x, y) {
       const existing = touchPoints.find(pt => pt.id === 'primary')
@@ -212,10 +219,7 @@ export default function createDriftSketch(gestureRef) {
         const spd = Math.sqrt(dx * dx + dy * dy)
         gestureSpeed = Math.min(spd, 60)
 
-        // Back-and-forth detection
-        const dir = Math.abs(dx) > Math.abs(dy)
-          ? (dx > 0 ? 'R' : 'L')
-          : (dy > 0 ? 'D' : 'U')
+        const dir = Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 'R' : 'L') : (dy > 0 ? 'D' : 'U')
         const opp = { R: 'L', L: 'R', D: 'U', U: 'D' }
         const analytics = gestureRef.current?.analytics
         if (analytics && lastMoveDir && dir === opp[lastMoveDir]) {
@@ -229,6 +233,7 @@ export default function createDriftSketch(gestureRef) {
       } else {
         touchPoints.push({ id: 'primary', x, y, strength: 1, radius: 160 })
       }
+      // Update hue from movement speed
       if (gestureRef.current) {
         gestureRef.current.targetHue = mapSpeedToHue(gestureSpeed)
       }
@@ -244,9 +249,8 @@ export default function createDriftSketch(gestureRef) {
         lastTapTime = now
       }
       touchPoints.push({ id: 'primary', x, y, strength: 0.6, radius: 160 })
-      if (gestureRef.current) {
-        gestureRef.current.targetHue = mapSpeedToHue(0)
-      }
+      // FIX: do NOT reset targetHue on press — let movement speed drive it.
+      // Pressing without moving is a neutral gesture, not a "Peace" signal.
     }
 
     function handleRelease() {
@@ -303,18 +307,23 @@ export default function createDriftSketch(gestureRef) {
     p.touchEnded   = () => { handleRelease(); return false }
     p.windowResized = () => p.resizeCanvas(window.innerWidth, window.innerHeight)
 
-    // ── Hue → emotion mapping ───────────────────────────────────────────────
-    // Idle/slow  → Peace (210) / Sadness (240)
-    // Medium     → Amazement (280) / Trust (120)
-    // Fast       → Ecstasy (55) / Alertness (30) / Anger (0)
+    // ── Speed → hue mapping ─────────────────────────────────────────────────
+    // Speed is pixels/frame. Thresholds lowered for mobile reachability.
+    // 0      → 210  Peace     (blue)
+    // ~5px   → 240  Sadness   (deep blue)
+    // ~10px  → 280  Amazement (violet)
+    // ~16px  → 120  Trust     (green)   ← crosses the hue wheel
+    // ~22px  → 55   Ecstasy   (yellow)
+    // ~28px  → 30   Alertness (orange)
+    // ~35px+ → 0    Anger     (red)
     function mapSpeedToHue(speed) {
-      const t = Math.min(speed / 50, 1)
-      if (t < 0.18) return lerp(210, 240, t / 0.18)
-      if (t < 0.36) return lerp(240, 280, (t - 0.18) / 0.18)
-      if (t < 0.55) return lerp(280, 120, (t - 0.36) / 0.19)
-      if (t < 0.70) return lerp(120, 55,  (t - 0.55) / 0.15)
-      if (t < 0.85) return lerp(55,  30,  (t - 0.70) / 0.15)
-      return           lerp(30,  0,   (t - 0.85) / 0.15)
+      const t = Math.min(speed / 35, 1)  // full range at 35px/frame (was 50)
+      if (t < 0.14) return lerp(210, 240, t / 0.14)
+      if (t < 0.28) return lerp(240, 280, (t - 0.14) / 0.14)
+      if (t < 0.46) return lerp(280, 120, (t - 0.28) / 0.18)
+      if (t < 0.63) return lerp(120, 55,  (t - 0.46) / 0.17)
+      if (t < 0.80) return lerp(55,  30,  (t - 0.63) / 0.17)
+      return           lerp(30,  0,   (t - 0.80) / 0.20)
     }
 
     function lerp(a, b, t) { return a + (b - a) * t }
@@ -322,58 +331,49 @@ export default function createDriftSketch(gestureRef) {
 }
 
 // ── Session analysis ──────────────────────────────────────────────────────────
-// Primary result = emotion whose hue bucket dominated the session.
-// Gesture counts used only to break ties, with conservative weights.
 export function analyzeSession(analytics) {
   if (!analytics) return null
   const { hueHistory, tapCount, rapidTapCount, backForthCount,
           stopCount, microCount, idleFrames, fluidFrames } = analytics
 
-  // Need at least a few samples to be meaningful
   if (!hueHistory || hueHistory.length < 2) return null
 
-  // 1. Count how many samples landed in each emotion's hue bucket
+  // 1. Bucket hue samples into emotions
   const buckets = {}
   for (const e of EMOTIONS) buckets[e.name] = 0
-
   for (const { hue } of hueHistory) {
-    const e = closestEmotion(hue)
-    buckets[e.name]++
+    buckets[closestEmotion(hue).name]++
   }
 
   const total = hueHistory.length
 
-  // 2. Convert bucket counts to base scores (0–100 scale)
+  // 2. Base score = fraction of session time in that hue zone (0–100)
   const scores = {}
   for (const e of EMOTIONS) {
     scores[e.name] = (buckets[e.name] / total) * 100
   }
 
-  // 3. Gesture tiebreakers — small flat bonuses, capped so they can't
-  //    flip the result unless two emotions are genuinely close in hue time
-  const BONUS = 6  // max bonus any single gesture signal can add
+  // 3. Gesture tiebreakers — capped at +8 so they only flip very close ties
+  const CAP = 8
+  scores['Anger']     += Math.min(rapidTapCount * 2,        CAP)
+  scores['Ecstasy']   += Math.min(microCount * 1.5,         CAP)
+  scores['Sadness']   += Math.min(backForthCount * 1.2,     CAP)
+  scores['Amazement'] += Math.min(stopCount * 2,            CAP)
+  scores['Trust']     += Math.min((fluidFrames / 30) * 0.5, CAP)
+  scores['Peace']     += Math.min((idleFrames / 30) * 0.5,  CAP)
+  scores['Alertness'] += (tapCount > 8 && rapidTapCount < 3) ? 4 : 0
 
-  scores['Anger']     += Math.min(rapidTapCount * 1.5, BONUS)
-  scores['Ecstasy']   += Math.min(microCount * 1.2, BONUS)
-  scores['Sadness']   += Math.min(backForthCount * 1.0, BONUS)
-  scores['Amazement'] += Math.min(stopCount * 1.5, BONUS)
-  scores['Trust']     += Math.min((fluidFrames / 60) * 1.0, BONUS)
-  scores['Peace']     += Math.min((idleFrames / 60) * 1.0, BONUS)
-  scores['Alertness'] += Math.min(tapCount > 5 && rapidTapCount < 2 ? 3 : 0, BONUS)
-
-  // 4. Sort and pick top two
   const sorted = EMOTIONS
     .map(e => ({ ...e, score: scores[e.name] }))
     .sort((a, b) => b.score - a.score)
 
   const primary   = sorted[0]
-  const secondary = sorted[1].score > 5 ? sorted[1] : null
+  const secondary = sorted[1].score > 8 ? sorted[1] : null
 
-  const hueSpread = Math.max(...hueHistory.map(h => h.hue))
-                  - Math.min(...hueHistory.map(h => h.hue))
-  const wasExpressive = hueSpread > 70
+  const hues = hueHistory.map(h => h.hue)
+  const hueSpread = Math.max(...hues) - Math.min(...hues)
 
-  return { primary, secondary, wasExpressive, tapCount, allScores: sorted }
+  return { primary, secondary, wasExpressive: hueSpread > 60, tapCount, allScores: sorted }
 }
 
 function closestEmotion(hue) {
